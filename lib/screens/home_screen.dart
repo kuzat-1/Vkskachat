@@ -23,8 +23,9 @@ class _HomeScreenState extends State<HomeScreen>
   bool _loading = false;
   String? _error;
   VideoModel? _preview;
-  Map<String, String> _qualities = {}; // '720' -> url
+  Map<String, String> _qualities = {};
   String _selected = '';
+  List<Map<String, String>> _results = const [];
 
   @override
   void dispose() {
@@ -38,50 +39,98 @@ class _HomeScreenState extends State<HomeScreen>
   Future<void> _go() async {
     final String raw = _input.text.trim();
     if (raw.isEmpty || _loading) return;
+
+    // История пишется на каждый запрос — вкладка «История» живая
+    appState.addHistory(raw);
+
+    if (VkApiService.looksLikeLinkOrId(raw)) {
+      await _resolve(raw);
+    } else {
+      await _doSearch(raw);
+    }
+  }
+
+  Future<void> _resolve(String raw) async {
     setState(() {
       _loading = true;
       _error = null;
       _preview = null;
+      _results = const [];
     });
     try {
-      final VideoModel? v = await VkApiService.getVideoByUrl(raw);
-      if (v == null) throw Exception('not found');
-      final Map<String, String> links =
-          await VkApiService.getDownloadLinks(v.id);
-      final Map<String, String> q = <String, String>{};
-      links.forEach((k, url) {
-        final digits = k.replaceAll(RegExp(r'\D'), '');
-        if (digits.isNotEmpty && url.isNotEmpty) q[digits] = url;
-      });
-      if (q.isEmpty) throw Exception('no qualities');
-      appState.addHistory(raw);
+      final res = await VkApiService.resolve(raw);
       if (!mounted) return;
+      if (res == null) throw Exception('resolve failed');
+
+      final qualities = res['qualities'] as Map<String, String>;
+      final v = VideoModel(
+        id: VkApiService.normalizeVideoId(raw) ?? raw,
+        title: res['title'] as String,
+        thumbnailUrl: res['thumb'] as String,
+        videoUrl: '',
+        channelName: 'VK Видео',
+        views: 0,
+        duration:
+            VkApiService.fmtDuration(res['duration'] as int),
+        qualities: [],
+      );
+
       setState(() {
         _preview = v;
-        _qualities = q;
-        final keys = q.keys
-            .map(int.parse)
-            .toList()
-          ..sort((a, b) => b.compareTo(a));
-        _selected = keys.contains(720)
-            ? '720'
-            : keys.isNotEmpty
-                ? keys.first.toString()
-                : '';
+        _qualities = qualities;
+        _selected = _pickDefault(qualities.keys.toList());
         _loading = false;
       });
     } catch (_) {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = 'Не удалось получить видео по этой ссылке.\n'
-            'Проверьте ссылку и попробуйте ещё раз.';
+        _error = 'Не удалось получить видео.\n'
+            'Проверьте ссылку (видео должно быть публичным) '
+            'и попробуйте ещё раз.';
+      });
+    }
+  }
+
+  /// По умолчанию берём качество ближе к 720p
+  String _pickDefault(List<String> keys) {
+    if (keys.contains('720')) return '720';
+    final nums = keys.map(int.parse).toList()..sort();
+    final lower = nums.where((n) => n <= 720).toList();
+    return (lower.isNotEmpty ? lower.last : nums.first).toString();
+  }
+
+  Future<void> _doSearch(String query) async {
+    setState(() {
+      _loading = true;
+      _error = null;
+      _preview = null;
+      _results = const [];
+    });
+    try {
+      final rs = await VkApiService.search(query);
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _results = rs;
+        if (rs.isEmpty) {
+          _error =
+              'Ничего не найдено. Попробуйте вставить прямую '
+              'ссылку на видео.';
+        }
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = 'Поиск недоступен. Вставьте ссылку на видео.';
       });
     }
   }
 
   int _durSec(String s) {
-    final parts = s.split(':').map((e) => int.tryParse(e.trim()) ?? 0).toList();
+    final parts =
+        s.split(':').map((e) => int.tryParse(e.trim()) ?? 0).toList();
     if (parts.length == 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
     if (parts.length == 2) return parts[0] * 60 + parts[1];
     if (parts.length == 1) return parts[0];
@@ -90,7 +139,15 @@ class _HomeScreenState extends State<HomeScreen>
 
   String _sizeFor(String q) {
     if (_preview == null) return '';
-    const rates = {'240': 0.35, '360': 0.6, '480': 0.95, '720': 1.6, '1080': 2.6};
+    const rates = {
+      '240': 0.35,
+      '360': 0.6,
+      '480': 0.95,
+      '720': 1.6,
+      '1080': 2.6,
+      '1440': 4.5,
+      '2160': 8.0,
+    };
     final sec = _durSec(_preview!.duration);
     if (sec <= 0) return '';
     final mb = ((rates[q] ?? 1.0) * sec).round();
@@ -100,6 +157,9 @@ class _HomeScreenState extends State<HomeScreen>
   Future<void> _startDownload() async {
     final v = _preview;
     if (v == null || _selected.isEmpty) return;
+    final url = _qualities[_selected];
+    if (url == null || url.isEmpty) return;
+
     final id = DateTime.now().millisecondsSinceEpoch.toString();
     final item = DownloadItem(
       id: id,
@@ -113,8 +173,8 @@ class _HomeScreenState extends State<HomeScreen>
 
     int lastPercent = -1;
     try {
-      final path = await _downloader.downloadVideo(v, _selected,
-          (received, total) {
+      final path = await _downloader.downloadVideo(
+          v, _selected, url, (received, total) {
         if (total <= 0) return;
         final pct = (received / total * 100).floor();
         if (pct != lastPercent) {
@@ -153,12 +213,13 @@ class _HomeScreenState extends State<HomeScreen>
               controller: _tabs,
               labelColor: UiColors.text,
               unselectedLabelColor: UiColors.textDim,
-              labelStyle:
-                  const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+              labelStyle: const TextStyle(
+                  fontSize: 14, fontWeight: FontWeight.w600),
               dividerColor: Colors.transparent,
               indicatorSize: TabBarIndicatorSize.label,
               indicator: const UnderlineTabIndicator(
-                borderSide: BorderSide(width: 3, color: UiColors.accent),
+                borderSide:
+                    BorderSide(width: 3, color: UiColors.accent),
               ),
               tabs: const [
                 Tab(text: 'Поиск'),
@@ -172,8 +233,10 @@ class _HomeScreenState extends State<HomeScreen>
                 children: [
                   _searchTab(),
                   _historyTab(),
-                  emptyState(Icons.favorite_border,
-                      'Здесь появятся видео, добавленные в избранное'),
+                  emptyState(
+                      Icons.favorite_border,
+                      'Здесь появятся видео, добавленные '
+                          'в избранное'),
                 ],
               ),
             ),
@@ -201,20 +264,26 @@ class _HomeScreenState extends State<HomeScreen>
                 child: CircularProgressIndicator(color: UiColors.accent),
               ),
             )
-          else if (_preview != null)
-            _previewSection()
-          else if (_error != null)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: Text(
-                _error!,
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: UiColors.textDim, fontSize: 13,
-                    height: 1.5),
-              ),
-            )
-          else
-            _hintBlock(),
+          else ...[
+            if (_preview != null)
+              _previewSection()
+            else if (_results.isNotEmpty)
+              _resultsSection()
+            else if (_error != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: Text(
+                  _error!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      color: UiColors.textDim,
+                      fontSize: 13,
+                      height: 1.5),
+                ),
+              )
+            else
+              _hintBlock(),
+          ],
         ],
       ),
     );
@@ -249,7 +318,7 @@ class _HomeScreenState extends State<HomeScreen>
         ),
         const SizedBox(height: 6),
         const Text(
-          'Вставьте ссылку — найдём и покажем видео',
+          'Ссылка на видео или название для поиска',
           style: TextStyle(fontSize: 13, color: UiColors.textDim),
         ),
       ],
@@ -273,10 +342,12 @@ class _HomeScreenState extends State<HomeScreen>
           Expanded(
             child: TextField(
               controller: _input,
-              style: const TextStyle(color: UiColors.text, fontSize: 15),
+              style:
+                  const TextStyle(color: UiColors.text, fontSize: 15),
               decoration: const InputDecoration.collapsed(
-                hintText: 'Вставьте ссылку на видео из VK',
-                hintStyle: TextStyle(color: UiColors.textDim, fontSize: 15),
+                hintText: 'Ссылка на видео или название',
+                hintStyle:
+                    TextStyle(color: UiColors.textDim, fontSize: 15),
               ),
               onSubmitted: (_) => _go(),
             ),
@@ -289,7 +360,8 @@ class _HomeScreenState extends State<HomeScreen>
               height: 40,
               decoration: const BoxDecoration(
                   color: UiColors.accent, shape: BoxShape.circle),
-              child: const Icon(Icons.search, color: Colors.white, size: 17),
+              child: const Icon(Icons.search,
+                  color: Colors.white, size: 17),
             ),
           ),
         ],
@@ -306,12 +378,95 @@ class _HomeScreenState extends State<HomeScreen>
               size: 40, color: UiColors.textDim.withOpacity(.4)),
           const SizedBox(height: 14),
           const Text(
-            'Вставьте ссылку на видео, чтобы посмотреть его и выбрать качество для скачивания',
+            'Вставьте ссылку вида vk.com/video…\nили введите название видео',
             textAlign: TextAlign.center,
             style: TextStyle(
                 color: UiColors.textDim, fontSize: 13, height: 1.5),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _resultsSection() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Найдено видео',
+            style: TextStyle(
+                fontSize: 12,
+                color: UiColors.textDim,
+                letterSpacing: 0.7),
+          ),
+          const SizedBox(height: 10),
+          ..._results.map((r) => _resultRow(r)),
+        ],
+      ),
+    );
+  }
+
+  Widget _resultRow(Map<String, String> r) {
+    final vid = r['id'] ?? '';
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: () {
+        _input.text = 'https://vk.com/video$vid';
+        _resolve(_input.text);
+      },
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: UiColors.surface,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: UiColors.border),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 100,
+              height: 62,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(10),
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [UiColors.surface2, UiColors.border],
+                ),
+              ),
+              child: const Icon(Icons.play_arrow,
+                  color: UiColors.textDim, size: 20),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Видео $vid',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: UiColors.text),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Нажмите, чтобы открыть и скачать',
+                    style: TextStyle(
+                        fontFamily: kMono,
+                        fontSize: 11,
+                        color: UiColors.textDim),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -355,8 +510,8 @@ class _HomeScreenState extends State<HomeScreen>
                             color: UiColors.playCircle,
                             shape: BoxShape.circle,
                           ),
-                          child:
-                              const Icon(Icons.play_arrow, color: Colors.white),
+                          child: const Icon(Icons.play_arrow,
+                              color: Colors.white),
                         ),
                       ),
                       Positioned(
@@ -382,8 +537,7 @@ class _HomeScreenState extends State<HomeScreen>
                   ),
                 ),
                 Padding(
-                  padding:
-                      const EdgeInsets.fromLTRB(16, 14, 16, 14),
+                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -421,9 +575,7 @@ class _HomeScreenState extends State<HomeScreen>
           Wrap(
             spacing: 8,
             runSpacing: 8,
-            children: _qualities.keys
-                .map((q) => _chip(q))
-                .toList(),
+            children: _qualities.keys.map((q) => _chip(q)).toList(),
           ),
           const SizedBox(height: 20),
           _downloadButton(),
@@ -454,7 +606,8 @@ class _HomeScreenState extends State<HomeScreen>
         decoration: BoxDecoration(
           color: sel ? UiColors.accentSoft : UiColors.surface,
           borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: sel ? UiColors.accent : UiColors.border),
+          border:
+              Border.all(color: sel ? UiColors.accent : UiColors.border),
         ),
         child: Text.rich(
           TextSpan(
