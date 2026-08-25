@@ -4,11 +4,9 @@ import 'screens/downloads_screen.dart';
 import 'screens/home_screen.dart';
 import 'state/app_state.dart';
 import 'ui_theme.dart';
-import 'utils/server_manager.dart';
 
-void main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  await ServerManager.startServer();
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.light,
