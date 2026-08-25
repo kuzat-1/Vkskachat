@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../models/video_model.dart';
 import '../services/download_service.dart';
 import '../services/vk_api_service.dart';
@@ -41,7 +40,6 @@ class _HomeScreenState extends State<HomeScreen>
     final String raw = _input.text.trim();
     if (raw.isEmpty || _loading) return;
 
-    // История пишется на каждый запрос — вкладка «История» живая
     appState.addHistory(raw);
 
     if (VkApiService.looksLikeLinkOrId(raw)) {
@@ -61,18 +59,20 @@ class _HomeScreenState extends State<HomeScreen>
     try {
       final res = await VkApiService.resolve(raw);
       if (!mounted) return;
-      if (res == null) throw Exception('resolve failed');
+      if (res == null) throw Exception(VkApiService.lastError ?? '');
 
-      final qualities = res['qualities'] as Map<String, String>;
+      final qualities =
+          Map<String, String>.from(res['qualities'] as Map);
       final v = VideoModel(
-        id: VkApiService.normalizeVideoId(raw) ?? raw,
+        id: (res['id'] as String?) ??
+            (VkApiService.normalizeVideoId(raw) ?? raw),
         title: res['title'] as String,
         thumbnailUrl: res['thumb'] as String,
         videoUrl: '',
         channelName: 'VK Видео',
         views: 0,
-        duration:
-            VkApiService.fmtDuration(res['duration'] as int),
+        duration: VkApiService.fmtDuration(
+            (res['duration'] as int?) ?? 0),
         qualities: [],
       );
 
@@ -87,19 +87,16 @@ class _HomeScreenState extends State<HomeScreen>
       setState(() {
         _loading = false;
         final err = VkApiService.lastError;
-        _error = 'Не удалось получить видео.'
-            '${err != null && err.isNotEmpty ? '\n$err' : ''}'
-            '\n\nСовет: добавьте VK-токен через шестерёнку выше — '
-            'тогда работает стабильно.';
+        _error = 'Не получилось открыть видео.'
+            '${err != null && err.isNotEmpty ? '\n$err' : ''}';
       });
     }
   }
 
-  /// По умолчанию берём качество ближе к 720p
   String _pickDefault(List<String> keys) {
     if (keys.contains('720')) return '720';
-    final nums = keys.map(int.parse).toList()..sort();
-    final lower = nums.where((n) => n <= 720).toList();
+    final nums = keys.map((e) => int.tryParse(e) ?? 0).toList()..sort();
+    final lower = nums.where((n) => n <= 720 && n > 0).toList();
     return (lower.isNotEmpty ? lower.last : nums.first).toString();
   }
 
@@ -127,7 +124,7 @@ class _HomeScreenState extends State<HomeScreen>
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = 'Поиск недоступен. Вставьте ссылку на видео.';
+        _error = 'Поиск временно не работает. Попробуйте ссылку.';
       });
     }
   }
@@ -237,10 +234,8 @@ class _HomeScreenState extends State<HomeScreen>
                 children: [
                   _searchTab(),
                   _historyTab(),
-                  emptyState(
-                      Icons.favorite_border,
-                      'Здесь появятся видео, добавленные '
-                          'в избранное'),
+                  emptyState(Icons.favorite_border,
+                      'Здесь появятся видео, добавленные в избранное'),
                 ],
               ),
             ),
@@ -256,15 +251,7 @@ class _HomeScreenState extends State<HomeScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const SizedBox(height: 12),
-          Align(
-            alignment: Alignment.centerRight,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: _settingsButton(),
-            ),
-          ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 26),
           _hero(),
           const SizedBox(height: 22),
           _searchBox(),
@@ -492,6 +479,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   Widget _previewSection() {
     final v = _preview!;
+    final bool noLinks = _qualities.isEmpty;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Column(
@@ -571,9 +559,9 @@ class _HomeScreenState extends State<HomeScreen>
                             color: UiColors.text),
                       ),
                       const SizedBox(height: 4),
-                      Text(
-                        'Автор: ${v.channelName}',
-                        style: const TextStyle(
+                      const Text(
+                        'VK Видео',
+                        style: TextStyle(
                             fontSize: 13, color: UiColors.textDim),
                       ),
                     ],
@@ -582,22 +570,42 @@ class _HomeScreenState extends State<HomeScreen>
               ],
             ),
           ),
-          const SizedBox(height: 18),
-          const Text(
-            'Качество для скачивания',
-            style: TextStyle(
-                fontSize: 12,
-                color: UiColors.textDim,
-                letterSpacing: 0.7),
-          ),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: _qualities.keys.map((q) => _chip(q)).toList(),
-          ),
-          const SizedBox(height: 20),
-          _downloadButton(),
+          if (noLinks)
+            Container(
+              margin: const EdgeInsets.only(top: 18),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: UiColors.accentSoft,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: UiColors.accent),
+              ),
+              child: const Text(
+                'Это видео нашлось, но ссылки на файл для него '
+                'пока не выданы. Мы подключаем полный доступ — '
+                'попробуй позже или другое видео.',
+                style: TextStyle(
+                    fontSize: 13, height: 1.45, color: UiColors.text),
+              ),
+            )
+          else ...[
+            const SizedBox(height: 18),
+            const Text(
+              'Качество для скачивания',
+              style: TextStyle(
+                  fontSize: 12,
+                  color: UiColors.textDim,
+                  letterSpacing: 0.7),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children:
+                  _qualities.keys.map((q) => _chip(q)).toList(),
+            ),
+            const SizedBox(height: 20),
+            _downloadButton(),
+          ],
         ],
       ),
     );
@@ -680,155 +688,6 @@ class _HomeScreenState extends State<HomeScreen>
         ),
       ),
     );
-  }
-
-  // ---------- настройки (VK токен) ----------
-
-  Widget _settingsButton() {
-    final bool hasToken = VkApiService.hasToken;
-    return GestureDetector(
-      onTap: _openSettings,
-      child: Container(
-        width: 36,
-        height: 36,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          border: Border.all(
-              color: hasToken ? UiColors.accent : UiColors.border),
-        ),
-        child: Icon(
-          Icons.settings_outlined,
-          size: 17,
-          color: hasToken ? UiColors.accent : UiColors.textDim,
-        ),
-      ),
-    );
-  }
-
-  Future<void> _openSettings() async {
-    final ctrl = TextEditingController(text: VkApiService.token ?? '');
-    await showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: UiColors.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.fromLTRB(20, 16, 20,
-            MediaQuery.of(ctx).viewInsets.bottom + 24),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Настройки · VK токен',
-                style: TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w700,
-                    color: UiColors.text),
-              ),
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: UiColors.bg,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: UiColors.border),
-                ),
-                child: const Text(
-                  '1. Создай Standalone-приложение на vk.com/editapp?act=create'
-                  ' (нужно подтвердить телефон)\n\n'
-                  '2. В браузере открой (замени APP_ID на свой):\n'
-                  'oauth.vk.com/authorize?client_id=APP_ID&scope=video,offline'
-                  '&response_type=token&v=5.199\n\n'
-                  '3. Нажми «Разрешить» — в адресной строке будет '
-                  'access_token=...\nСкопируй токен сюда.',
-                  style: TextStyle(
-                      fontSize: 12.5,
-                      height: 1.5,
-                      color: UiColors.textDim),
-                ),
-              ),
-              const SizedBox(height: 14),
-              TextField(
-                controller: ctrl,
-                maxLines: 3,
-                style: const TextStyle(
-                    fontFamily: kMono,
-                    fontSize: 12,
-                    color: UiColors.text),
-                decoration: InputDecoration(
-                  hintText: 'access_token...',
-                  hintStyle: const TextStyle(
-                      color: UiColors.textDim, fontSize: 12),
-                  filled: true,
-                  fillColor: UiColors.bg,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide:
-                        const BorderSide(color: UiColors.border),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide:
-                        const BorderSide(color: UiColors.border),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 14),
-              Material(
-                color: UiColors.accent,
-                borderRadius: BorderRadius.circular(12),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(12),
-                  onTap: () async {
-                    final t = ctrl.text.trim();
-                    VkApiService.token = t.isEmpty ? null : t;
-                    try {
-                      final prefs =
-                          await SharedPreferences.getInstance();
-                      await prefs.setString('vk_token', t);
-                    } catch (_) {}
-                    if (ctx.mounted) Navigator.pop(ctx);
-                    if (mounted) {
-                      setState(() {});
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          behavior: SnackBarBehavior.floating,
-                          backgroundColor: UiColors.surface2,
-                          content: Text(
-                              t.isEmpty
-                                  ? 'Токен удалён'
-                                  : 'Токен сохранён',
-                              style: const TextStyle(
-                                  color: UiColors.text)),
-                        ),
-                      );
-                    }
-                  },
-                  child: Container(
-                    width: double.infinity,
-                    padding:
-                        const EdgeInsets.symmetric(vertical: 13),
-                    child: const Text(
-                      'Сохранить',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-    ctrl.dispose();
   }
 
   Widget _historyTab() {

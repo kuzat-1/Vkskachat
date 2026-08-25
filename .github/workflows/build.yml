@@ -24,6 +24,11 @@ jobs:
       - name: Create Android scaffold
         run: flutter create . --platforms android --project-name vk_video_downloader --org com.kuzat
 
+      - name: Allow cleartext HTTP (server API)
+        run: |
+          sed -i 's|<application|<application android:usesCleartextTraffic="true"|' android/app/src/main/AndroidManifest.xml
+          grep -q usesCleartextTraffic android/app/src/main/AndroidManifest.xml
+
       - name: Install dependencies
         run: flutter pub get
 
