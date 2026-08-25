@@ -1,0 +1,39 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Create Android scaffold
+        run: flutter create . --platforms android --project-name vk_video_downloader --org com.kuzat
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Collect APK
+        run: cp build/app/outputs/flutter-apk/app-release.apk vk-video-downloader.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vk-video-downloader-apk
+          path: vk-video-downloader.apk
