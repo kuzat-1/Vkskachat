@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'screens/downloads_screen.dart';
 import 'screens/home_screen.dart';
 import 'services/vk_api_service.dart';
+import 'state/app_state.dart';
 import 'ui_theme.dart';
 
 Future<void> main() async {
