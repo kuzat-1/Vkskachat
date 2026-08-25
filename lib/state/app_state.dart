@@ -15,7 +15,7 @@ class DownloadItem {
   final String title;
   final String quality;
   final String sizeLabel;
-  final String filePath;
+  String filePath;
   double progress; // 0..1
   bool done;
 }
