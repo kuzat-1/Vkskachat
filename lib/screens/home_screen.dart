@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/video_model.dart';
 import '../services/download_service.dart';
 import '../services/vk_api_service.dart';
@@ -85,9 +86,11 @@ class _HomeScreenState extends State<HomeScreen>
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = 'Не удалось получить видео.\n'
-            'Проверьте ссылку (видео должно быть публичным) '
-            'и попробуйте ещё раз.';
+        final err = VkApiService.lastError;
+        _error = 'Не удалось получить видео.'
+            '${err != null && err.isNotEmpty ? '\n$err' : ''}'
+            '\n\nСовет: добавьте VK-токен через шестерёнку выше — '
+            'тогда работает стабильно.';
       });
     }
   }
@@ -114,9 +117,10 @@ class _HomeScreenState extends State<HomeScreen>
         _loading = false;
         _results = rs;
         if (rs.isEmpty) {
-          _error =
-              'Ничего не найдено. Попробуйте вставить прямую '
-              'ссылку на видео.';
+          final err = VkApiService.lastError;
+          _error = (err != null && err.isNotEmpty)
+              ? 'Поиск не дал результатов.\n$err'
+              : 'Ничего не найдено. Попробуйте другой запрос.';
         }
       });
     } catch (_) {
@@ -252,7 +256,15 @@ class _HomeScreenState extends State<HomeScreen>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const SizedBox(height: 26),
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerRight,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: _settingsButton(),
+            ),
+          ),
+          const SizedBox(height: 8),
           _hero(),
           const SizedBox(height: 22),
           _searchBox(),
@@ -410,6 +422,9 @@ class _HomeScreenState extends State<HomeScreen>
 
   Widget _resultRow(Map<String, String> r) {
     final vid = r['id'] ?? '';
+    final title = (r['title'] ?? '').trim();
+    final thumb = r['thumb'] ?? '';
+    final durSec = int.tryParse(r['duration'] ?? '') ?? 0;
     return InkWell(
       borderRadius: BorderRadius.circular(14),
       onTap: () {
@@ -426,19 +441,20 @@ class _HomeScreenState extends State<HomeScreen>
         ),
         child: Row(
           children: [
-            Container(
-              width: 100,
-              height: 62,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(10),
-                gradient: const LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [UiColors.surface2, UiColors.border],
-                ),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: SizedBox(
+                width: 100,
+                height: 62,
+                child: thumb.isNotEmpty
+                    ? Image.network(
+                        thumb,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) =>
+                            _thumbPlaceholder(),
+                      )
+                    : _thumbPlaceholder(),
               ),
-              child: const Icon(Icons.play_arrow,
-                  color: UiColors.textDim, size: 20),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -446,22 +462,25 @@ class _HomeScreenState extends State<HomeScreen>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Видео $vid',
-                    maxLines: 1,
+                    title.isEmpty ? 'Видео $vid' : title,
+                    maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
+                        height: 1.3,
                         color: UiColors.text),
                   ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    'Нажмите, чтобы открыть и скачать',
-                    style: TextStyle(
-                        fontFamily: kMono,
-                        fontSize: 11,
-                        color: UiColors.textDim),
-                  ),
+                  if (durSec > 0) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      VkApiService.fmtDuration(durSec),
+                      style: const TextStyle(
+                          fontFamily: kMono,
+                          fontSize: 11,
+                          color: UiColors.textDim),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -661,6 +680,155 @@ class _HomeScreenState extends State<HomeScreen>
         ),
       ),
     );
+  }
+
+  // ---------- настройки (VK токен) ----------
+
+  Widget _settingsButton() {
+    final bool hasToken = VkApiService.hasToken;
+    return GestureDetector(
+      onTap: _openSettings,
+      child: Container(
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(
+              color: hasToken ? UiColors.accent : UiColors.border),
+        ),
+        child: Icon(
+          Icons.settings_outlined,
+          size: 17,
+          color: hasToken ? UiColors.accent : UiColors.textDim,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openSettings() async {
+    final ctrl = TextEditingController(text: VkApiService.token ?? '');
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: UiColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.fromLTRB(20, 16, 20,
+            MediaQuery.of(ctx).viewInsets.bottom + 24),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Настройки · VK токен',
+                style: TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                    color: UiColors.text),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: UiColors.bg,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: UiColors.border),
+                ),
+                child: const Text(
+                  '1. Создай Standalone-приложение на vk.com/editapp?act=create'
+                  ' (нужно подтвердить телефон)\n\n'
+                  '2. В браузере открой (замени APP_ID на свой):\n'
+                  'oauth.vk.com/authorize?client_id=APP_ID&scope=video,offline'
+                  '&response_type=token&v=5.199\n\n'
+                  '3. Нажми «Разрешить» — в адресной строке будет '
+                  'access_token=...\nСкопируй токен сюда.',
+                  style: TextStyle(
+                      fontSize: 12.5,
+                      height: 1.5,
+                      color: UiColors.textDim),
+                ),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: ctrl,
+                maxLines: 3,
+                style: const TextStyle(
+                    fontFamily: kMono,
+                    fontSize: 12,
+                    color: UiColors.text),
+                decoration: InputDecoration(
+                  hintText: 'access_token...',
+                  hintStyle: const TextStyle(
+                      color: UiColors.textDim, fontSize: 12),
+                  filled: true,
+                  fillColor: UiColors.bg,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide:
+                        const BorderSide(color: UiColors.border),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide:
+                        const BorderSide(color: UiColors.border),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Material(
+                color: UiColors.accent,
+                borderRadius: BorderRadius.circular(12),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: () async {
+                    final t = ctrl.text.trim();
+                    VkApiService.token = t.isEmpty ? null : t;
+                    try {
+                      final prefs =
+                          await SharedPreferences.getInstance();
+                      await prefs.setString('vk_token', t);
+                    } catch (_) {}
+                    if (ctx.mounted) Navigator.pop(ctx);
+                    if (mounted) {
+                      setState(() {});
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          behavior: SnackBarBehavior.floating,
+                          backgroundColor: UiColors.surface2,
+                          content: Text(
+                              t.isEmpty
+                                  ? 'Токен удалён'
+                                  : 'Токен сохранён',
+                              style: const TextStyle(
+                                  color: UiColors.text)),
+                        ),
+                      );
+                    }
+                  },
+                  child: Container(
+                    width: double.infinity,
+                    padding:
+                        const EdgeInsets.symmetric(vertical: 13),
+                    child: const Text(
+                      'Сохранить',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    ctrl.dispose();
   }
 
   Widget _historyTab() {

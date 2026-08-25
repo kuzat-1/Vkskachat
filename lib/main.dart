@@ -1,12 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
 import 'screens/downloads_screen.dart';
 import 'screens/home_screen.dart';
-import 'state/app_state.dart';
+import 'services/vk_api_service.dart';
 import 'ui_theme.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    VkApiService.token = prefs.getString('vk_token');
+  } catch (_) {}
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.light,
@@ -72,17 +78,9 @@ class _MainScreenState extends State<MainScreen> {
           height: 58,
           child: Row(
             children: [
-              _navButton(
-                0,
-                Icons.search_outlined,
-                Icons.search,
-              ),
-              _navButton(
-                1,
-                Icons.download_outlined,
-                Icons.download,
-                badge: count,
-              ),
+              _navButton(0, Icons.search_outlined, Icons.search),
+              _navButton(1, Icons.download_outlined, Icons.download,
+                  badge: count),
             ],
           ),
         ),
@@ -110,8 +108,8 @@ class _MainScreenState extends State<MainScreen> {
                   top: -7,
                   right: -9,
                   child: Container(
-                    constraints: const BoxConstraints(
-                        minWidth: 14, minHeight: 14),
+                    constraints:
+                        const BoxConstraints(minWidth: 14, minHeight: 14),
                     padding: const EdgeInsets.symmetric(horizontal: 3),
                     alignment: Alignment.center,
                     decoration: BoxDecoration(
