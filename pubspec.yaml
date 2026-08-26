@@ -12,6 +12,13 @@ dependencies:
   path_provider: ^2.1.1
   video_player: ^2.8.0
   dio: ^5.3.0
+  shared_preferences: ^2.2.0
+  flutter_inappwebview: ^6.1.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
 
 flutter:
   uses-material-design: true
