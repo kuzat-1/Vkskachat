@@ -320,6 +320,14 @@ class _HomeScreenState extends State<HomeScreen>
           'Ссылка на видео или название для поиска',
           style: TextStyle(fontSize: 13, color: UiColors.textDim),
         ),
+        const SizedBox(height: 4),
+        const Text(
+          'сборка 9 · серверное API',
+          style: TextStyle(
+              fontFamily: kMono,
+              fontSize: 10,
+              color: UiColors.textDim),
+        ),
       ],
     );
   }
