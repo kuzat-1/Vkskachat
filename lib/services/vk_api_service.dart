@@ -6,7 +6,7 @@ import 'package:http/http.dart' as http;
 /// Тонкий клиент к нашему серверу-прокси.
 /// Все токены VK живут на сервере — пользователи ничего не вводят.
 class VkApiService {
-  static const String base = 'http://185.221.22.180:8899';
+  static const String base = 'https://185.221.22.180.sslip.io';
   static const String appKey = 'vkskachat2026';
 
   static String? lastError;

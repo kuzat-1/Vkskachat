@@ -322,7 +322,7 @@ class _HomeScreenState extends State<HomeScreen>
         ),
         const SizedBox(height: 4),
         const Text(
-          'сборка 9 · серверное API',
+          'сборка 10 · https API',
           style: TextStyle(
               fontFamily: kMono,
               fontSize: 10,
