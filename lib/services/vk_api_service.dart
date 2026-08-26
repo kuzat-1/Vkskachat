@@ -6,7 +6,12 @@ import 'package:http/http.dart' as http;
 /// Тонкий клиент к нашему серверу-прокси.
 /// Все токены VK живут на сервере — пользователи ничего не вводят.
 class VkApiService {
-  static const String base = 'https://185.221.22.180.sslip.io';
+  /// Адреса сервера — приложение само выбирает рабочий
+  static const List<String> bases = [
+    'https://185.221.22.180.sslip.io',
+    'http://185.221.22.180',
+  ];
+  static int _active = -1;
   static const String appKey = 'vkskachat2026';
 
   static String? lastError;
@@ -63,19 +68,30 @@ class VkApiService {
   }
 
   static Future<Map<String, dynamic>?> _getJson(String path) async {
-    try {
-      final r = await http
-          .get(Uri.parse('$base$path'),
-              headers: {'X-App-Key': appKey})
-          .timeout(const Duration(seconds: 25));
-      if (r.statusCode != 200) {
-        lastError = 'Сервер: код ${r.statusCode}';
-        return null;
-      }
-      return jsonDecode(r.body);
-    } catch (_) {
-      lastError = 'Нет связи с сервером. Проверь интернет.';
-      return null;
+    lastError = null;
+    final order = <int>[];
+    if (_active >= 0) order.add(_active);
+    for (var i = 0; i < bases.length; i++) {
+      if (!order.contains(i)) order.add(i);
     }
+    for (final i in order) {
+      try {
+        final r = await http
+            .get(Uri.parse('${bases[i]}$path'),
+                headers: {'X-App-Key': appKey})
+            .timeout(const Duration(seconds: 20));
+        _active = i; // база отвечает — запоминаем
+        if (r.statusCode != 200) {
+          lastError = 'Сервер: код ${r.statusCode}';
+          return null;
+        }
+        return jsonDecode(r.body);
+      } catch (_) {
+        // пробуем следующий адрес
+      }
+    }
+    lastError =
+        'Нет связи с сервером. Проверь интернет и попробуй ещё раз.';
+    return null;
   }
 }
