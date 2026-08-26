@@ -322,7 +322,7 @@ class _HomeScreenState extends State<HomeScreen>
         ),
         const SizedBox(height: 4),
         const Text(
-          'сборка 11 · авто-подключение',
+          'сборка 12 · гибрид',
           style: TextStyle(
               fontFamily: kMono,
               fontSize: 10,
