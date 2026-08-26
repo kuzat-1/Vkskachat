@@ -193,8 +193,8 @@ class VkApiService {
 
   // ---------- ПОИСК (через сервер) ----------
 
-  /// results: [{id,title,thumb,duration}]
-  static Future<List<Map<String, String>>> search(String query) async {
+  /// results: [{id,title,thumb,duration(int),views}]
+  static Future<List<Map<String, dynamic>>> search(String query) async {
     lastError = null;
     final j =
         await _getJson('/api/search?q=${Uri.encodeQueryComponent(query)}');
@@ -204,9 +204,26 @@ class VkApiService {
       return const [];
     }
     final list = (j['results'] as List?) ?? const [];
-    return list
-        .map((e) => Map<String, String>.from(e as Map))
-        .toList();
+    return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+  }
+
+  // ---------- РЕКОМЕНДАЦИИ (лента через сервер) ----------
+
+  static Future<List<Map<String, dynamic>>> recommendations(
+      {String? cat, int limit = 12}) async {
+    lastError = null;
+    var path = '/api/recommendations?limit=$limit';
+    if (cat != null && cat.isNotEmpty) {
+      path += '&cat=${Uri.encodeQueryComponent(cat)}';
+    }
+    final j = await _getJson(path);
+    if (j == null) return const [];
+    if (j['error'] != null) {
+      lastError = j['error'].toString();
+      return const [];
+    }
+    final list = (j['results'] as List?) ?? const [];
+    return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
   }
 
   // ---------- транспорт к серверу ----------

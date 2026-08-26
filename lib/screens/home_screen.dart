@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'diag_screen.dart';
+import '../models/video_card.dart';
 import '../models/video_model.dart';
 import '../services/download_service.dart';
 import '../services/vk_api_service.dart';
@@ -19,14 +19,34 @@ class _HomeScreenState extends State<HomeScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tabs = TabController(length: 3, vsync: this);
   final TextEditingController _input = TextEditingController();
-  final DownloadService _downloader = DownloadService();
 
-  bool _loading = false;
-  String? _error;
-  VideoModel? _preview;
-  Map<String, String> _qualities = {};
-  String _selected = '';
-  List<Map<String, String>> _results = const [];
+  // лента рекомендаций
+  List<VideoCard> _feed = const [];
+  bool _feedLoading = false;
+  String? _feedError;
+  String _feedCat = '';
+
+  // поиск
+  List<VideoCard> _results = const [];
+  bool _searchLoading = false;
+  String? _searchError;
+  String _searchQuery = '';
+
+  static const _cats = [
+    ('', 'Все'),
+    ('music', 'Музыка'),
+    ('news', 'Новости'),
+    ('funny', 'Приколы'),
+    ('games', 'Игры'),
+    ('sport', 'Спорт'),
+    ('science', 'Наука'),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFeed();
+  }
 
   @override
   void dispose() {
@@ -35,170 +55,100 @@ class _HomeScreenState extends State<HomeScreen>
     super.dispose();
   }
 
-  // ---------- логика ----------
+  // ---------- ЛОГИКА ----------
 
-  Future<void> _go() async {
-    final String raw = _input.text.trim();
-    if (raw.isEmpty || _loading) return;
-
-    appState.addHistory(raw);
-
-    if (VkApiService.looksLikeLinkOrId(raw)) {
-      await _resolve(raw);
-    } else {
-      await _doSearch(raw);
-    }
-  }
-
-  Future<void> _resolve(String raw) async {
+  Future<void> _loadFeed() async {
+    if (_feedLoading) return;
     setState(() {
-      _loading = true;
-      _error = null;
-      _preview = null;
-      _results = const [];
+      _feedLoading = true;
+      _feedError = null;
     });
     try {
-      final res = await VkApiService.resolve(raw);
+      final rs = await VkApiService.recommendations(cat: _feedCat, limit: 14);
       if (!mounted) return;
-      if (res == null) throw Exception(VkApiService.lastError ?? '');
-
-      final qualities =
-          Map<String, String>.from(res['qualities'] as Map);
-      final v = VideoModel(
-        id: (res['id'] as String?) ??
-            (VkApiService.normalizeVideoId(raw) ?? raw),
-        title: res['title'] as String,
-        thumbnailUrl: res['thumb'] as String,
-        videoUrl: '',
-        channelName: 'VK Видео',
-        views: 0,
-        duration: VkApiService.fmtDuration(
-            (res['duration'] as int?) ?? 0),
-        qualities: [],
-      );
-
       setState(() {
-        _preview = v;
-        _qualities = qualities;
-        _selected = _pickDefault(qualities.keys.toList());
-        _loading = false;
+        _feedLoading = false;
+        _feed = rs.map(VideoCard.fromMap).toList();
+        if (_feed.isEmpty) {
+          _feedError = VkApiService.lastError?.isNotEmpty == true
+              ? 'Не удалось загрузить ленту.\n${VkApiService.lastError}'
+              : 'Лента пока пуста. Потяните вниз, чтобы обновить.';
+        }
       });
     } catch (_) {
       if (!mounted) return;
       setState(() {
-        _loading = false;
-        final err = VkApiService.lastError;
-        _error = 'Не получилось открыть видео.'
-            '${err != null && err.isNotEmpty ? '\n$err' : ''}';
+        _feedLoading = false;
+        _feedError = 'Нет связи с сервером. Проверьте интернет.';
       });
     }
   }
 
-  String _pickDefault(List<String> keys) {
-    if (keys.contains('720')) return '720';
-    final nums = keys.map((e) => int.tryParse(e) ?? 0).toList()..sort();
-    final lower = nums.where((n) => n <= 720 && n > 0).toList();
-    return (lower.isNotEmpty ? lower.last : nums.first).toString();
+  Future<void> _pickCat(String cat) async {
+    if (cat == _feedCat) return;
+    setState(() {
+      _feedCat = cat;
+      _feed = const [];
+    });
+    await _loadFeed();
   }
 
-  Future<void> _doSearch(String query) async {
+  Future<void> _goSearch() async {
+    final raw = _input.text.trim();
+    if (raw.isEmpty || _searchLoading) return;
+
+    appState.addHistory(raw);
+    _tabs.animateTo(1);
+
+    if (VkApiService.looksLikeLinkOrId(raw)) {
+      final id = VkApiService.normalizeVideoId(raw);
+      if (id != null) {
+        final card = VideoCard(
+          id: id,
+          title: 'Видео по ссылке',
+          thumb: '',
+          durationSec: 0,
+          views: 0,
+        );
+        await _openVideo(card, raw);
+        return;
+      }
+    }
+
     setState(() {
-      _loading = true;
-      _error = null;
-      _preview = null;
+      _searchLoading = true;
+      _searchError = null;
+      _searchQuery = raw;
       _results = const [];
     });
     try {
-      final rs = await VkApiService.search(query);
+      final rs = await VkApiService.search(raw);
       if (!mounted) return;
       setState(() {
-        _loading = false;
-        _results = rs;
-        if (rs.isEmpty) {
-          final err = VkApiService.lastError;
-          _error = (err != null && err.isNotEmpty)
-              ? 'Поиск не дал результатов.\n$err'
+        _searchLoading = false;
+        _results = rs.map(VideoCard.fromMap).toList();
+        if (_results.isEmpty) {
+          _searchError = VkApiService.lastError?.isNotEmpty == true
+              ? 'Поиск не дал результатов.\n${VkApiService.lastError}'
               : 'Ничего не найдено. Попробуйте другой запрос.';
         }
       });
     } catch (_) {
       if (!mounted) return;
       setState(() {
-        _loading = false;
-        _error = 'Поиск временно не работает. Попробуйте ссылку.';
+        _searchLoading = false;
+        _searchError = 'Поиск временно не работает. Попробуйте позже.';
       });
     }
   }
 
-  int _durSec(String s) {
-    final parts =
-        s.split(':').map((e) => int.tryParse(e.trim()) ?? 0).toList();
-    if (parts.length == 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-    if (parts.length == 2) return parts[0] * 60 + parts[1];
-    if (parts.length == 1) return parts[0];
-    return 0;
-  }
-
-  String _sizeFor(String q) {
-    if (_preview == null) return '';
-    const rates = {
-      '240': 0.35,
-      '360': 0.6,
-      '480': 0.95,
-      '720': 1.6,
-      '1080': 2.6,
-      '1440': 4.5,
-      '2160': 8.0,
-    };
-    final sec = _durSec(_preview!.duration);
-    if (sec <= 0) return '';
-    final mb = ((rates[q] ?? 1.0) * sec).round();
-    return '~$mb МБ';
-  }
-
-  Future<void> _startDownload() async {
-    final v = _preview;
-    if (v == null || _selected.isEmpty) return;
-    final url = _qualities[_selected];
-    if (url == null || url.isEmpty) return;
-
-    final id = DateTime.now().millisecondsSinceEpoch.toString();
-    final item = DownloadItem(
-      id: id,
-      title: v.title.isEmpty ? 'Видео' : v.title,
-      quality: '${_selected}p',
-      sizeLabel: _sizeFor(_selected),
-      filePath: '',
+  /// Открыть видео: резолв → лист с качеством → скачивание
+  Future<void> _openVideo(VideoCard card, String rawId) async {
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (_) => _ResolveDialog(card: card, rawId: rawId),
     );
-    appState.addDownload(item);
-    widget.onGoToDownloads();
-
-    int lastPercent = -1;
-    try {
-      final path = await _downloader.downloadVideo(
-          v, _selected, url, (received, total) {
-        if (total <= 0) return;
-        final pct = (received / total * 100).floor();
-        if (pct != lastPercent) {
-          lastPercent = pct;
-          appState.updateProgress(id, received / total);
-        }
-      });
-      item.filePath = path ?? '';
-      appState.markDone(id);
-    } catch (_) {
-      appState.remove(id);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            behavior: SnackBarBehavior.floating,
-            backgroundColor: UiColors.surface2,
-            content: Text('Ошибка скачивания',
-                style: TextStyle(color: UiColors.text)),
-          ),
-        );
-      }
-    }
   }
 
   // ---------- UI ----------
@@ -224,19 +174,18 @@ class _HomeScreenState extends State<HomeScreen>
                     BorderSide(width: 3, color: UiColors.accent),
               ),
               tabs: const [
+                Tab(text: 'Рекомендации'),
                 Tab(text: 'Поиск'),
                 Tab(text: 'История'),
-                Tab(text: 'Избранное'),
               ],
             ),
             Expanded(
               child: TabBarView(
                 controller: _tabs,
                 children: [
+                  _feedTab(),
                   _searchTab(),
                   _historyTab(),
-                  emptyState(Icons.favorite_border,
-                      'Здесь появятся видео, добавленные в избранное'),
                 ],
               ),
             ),
@@ -246,94 +195,144 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
+  // ============ ТАБ «РЕКОМЕНДАЦИИ» ============
+
+  Widget _feedTab() {
+    return Column(
+      children: [
+        const SizedBox(height: 10),
+        SizedBox(
+          height: 36,
+          child: ListView.separated(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            scrollDirection: Axis.horizontal,
+            itemCount: _cats.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 8),
+            itemBuilder: (context, i) {
+              final (key, label) = _cats[i];
+              final sel = key == _feedCat;
+              return GestureDetector(
+                onTap: () => _pickCat(key),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: sel ? UiColors.accentSoft : UiColors.surface,
+                    borderRadius: BorderRadius.circular(100),
+                    border: Border.all(
+                        color: sel ? UiColors.accent : UiColors.border),
+                  ),
+                  child: Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: sel ? FontWeight.w600 : FontWeight.w400,
+                      color: sel ? UiColors.text : UiColors.textDim,
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 12),
+        Expanded(
+          child: RefreshIndicator(
+            color: UiColors.accent,
+            backgroundColor: UiColors.surface,
+            onRefresh: _loadFeed,
+            child: _feedLoading && _feed.isEmpty
+                ? const Center(
+                    child: Padding(
+                      padding: EdgeInsets.only(top: 60),
+                      child: CircularProgressIndicator(color: UiColors.accent),
+                    ),
+                  )
+                : _feedError != null && _feed.isEmpty
+                    ? _feedErrorView()
+                    : _feedList(),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _feedErrorView() {
+    return ListView(
+      padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 60),
+      children: [
+        const Icon(Icons.cloud_off, size: 40, color: UiColors.textDim),
+        const SizedBox(height: 14),
+        Text(
+          _feedError!,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+              color: UiColors.textDim, fontSize: 13, height: 1.5),
+        ),
+        const SizedBox(height: 18),
+        Center(
+          child: Material(
+            color: UiColors.accent,
+            borderRadius: BorderRadius.circular(12),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: _loadFeed,
+              child: const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 22, vertical: 10),
+                child: Text('Повторить',
+                    style: TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.w600)),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _feedList() {
+    return ListView.separated(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 110),
+      itemCount: _feed.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 16),
+      itemBuilder: (context, i) => _videoCard(_feed[i]),
+    );
+  }
+
+  // ============ ТАБ «ПОИСК» ============
+
   Widget _searchTab() {
     return SingleChildScrollView(
       padding: const EdgeInsets.only(bottom: 110),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const SizedBox(height: 26),
-          _hero(),
-          const SizedBox(height: 22),
+          const SizedBox(height: 24),
           _searchBox(),
           const SizedBox(height: 22),
-          if (_loading)
+          if (_searchLoading)
             const Padding(
               padding: EdgeInsets.all(48),
               child: Center(
                 child: CircularProgressIndicator(color: UiColors.accent),
               ),
             )
-          else ...[
-            if (_preview != null)
-              _previewSection()
-            else if (_results.isNotEmpty)
-              _resultsSection()
-            else if (_error != null)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 32),
-                child: Text(
-                  _error!,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                      color: UiColors.textDim,
-                      fontSize: 13,
-                      height: 1.5),
-                ),
-              )
-            else
-              _hintBlock(),
-          ],
+          else if (_searchError != null && _results.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: Text(
+                _searchError!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    color: UiColors.textDim, fontSize: 13, height: 1.5),
+              ),
+            )
+          else if (_results.isNotEmpty)
+            _resultsList()
+          else
+            _hintBlock(),
         ],
       ),
-    );
-  }
-
-  Widget _hero() {
-    return Column(
-      children: [
-        GestureDetector(
-          onTap: () => Navigator.push(context,
-              MaterialPageRoute(builder: (_) => const DiagScreen())),
-          child: Container(
-            width: 56,
-            height: 56,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(16),
-              gradient: const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [UiColors.accent, UiColors.blue],
-              ),
-            ),
-            child: const Icon(Icons.arrow_downward_rounded,
-                color: Colors.white, size: 28),
-          ),
-        ),
-        const SizedBox(height: 14),
-        const Text(
-          'Видеозагрузчик',
-          style: TextStyle(
-            fontSize: 30,
-            fontWeight: FontWeight.w800,
-            letterSpacing: -0.9,
-            color: UiColors.accent,
-          ),
-        ),
-        const SizedBox(height: 6),
-        const Text(
-          'Ссылка на видео или название для поиска',
-          style: TextStyle(fontSize: 13, color: UiColors.textDim),
-        ),
-        const SizedBox(height: 4),
-        const Text(
-          'сборка 15 · сканер mp4',
-          style: TextStyle(
-              fontFamily: kMono,
-              fontSize: 10,
-              color: UiColors.textDim),
-        ),
-      ],
     );
   }
 
@@ -348,31 +347,29 @@ class _HomeScreenState extends State<HomeScreen>
       ),
       child: Row(
         children: [
-          const Icon(Icons.download_outlined,
-              color: UiColors.textDim, size: 18),
+          const Icon(Icons.search, color: UiColors.textDim, size: 18),
           const SizedBox(width: 10),
           Expanded(
             child: TextField(
               controller: _input,
-              style:
-                  const TextStyle(color: UiColors.text, fontSize: 15),
+              style: const TextStyle(color: UiColors.text, fontSize: 15),
               decoration: const InputDecoration.collapsed(
-                hintText: 'Ссылка на видео или название',
+                hintText: 'Название видео или ссылка',
                 hintStyle:
                     TextStyle(color: UiColors.textDim, fontSize: 15),
               ),
-              onSubmitted: (_) => _go(),
+              onSubmitted: (_) => _goSearch(),
             ),
           ),
           const SizedBox(width: 10),
           GestureDetector(
-            onTap: _go,
+            onTap: _goSearch,
             child: Container(
               width: 40,
               height: 40,
               decoration: const BoxDecoration(
                   color: UiColors.accent, shape: BoxShape.circle),
-              child: const Icon(Icons.search,
+              child: const Icon(Icons.arrow_forward,
                   color: Colors.white, size: 17),
             ),
           ),
@@ -383,86 +380,134 @@ class _HomeScreenState extends State<HomeScreen>
 
   Widget _hintBlock() {
     return Padding(
-      padding: const EdgeInsets.only(left: 40, right: 40, top: 40),
+      padding: const EdgeInsets.only(left: 40, right: 40, top: 44),
       child: Column(
         children: [
-          Icon(Icons.desktop_windows_outlined,
-              size: 40, color: UiColors.textDim.withOpacity(.4)),
+          const Icon(Icons.desktop_windows_outlined,
+              size: 40, color: UiColors.textDim),
           const SizedBox(height: 14),
           const Text(
-            'Вставьте ссылку вида vk.com/video…\nили введите название видео',
+            'Введите название видео — найдём его\nна VK и покажем карточки для скачивания',
             textAlign: TextAlign.center,
             style: TextStyle(
                 color: UiColors.textDim, fontSize: 13, height: 1.5),
           ),
+          const SizedBox(height: 6),
+          const Text(
+            'сборка 16 · лента VK',
+            style: TextStyle(
+                fontFamily: kMono, fontSize: 10, color: UiColors.textDim),
+          ),
         ],
       ),
     );
   }
 
-  Widget _resultsSection() {
+  Widget _resultsList() {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
+      padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Найдено видео',
-            style: TextStyle(
-                fontSize: 12,
-                color: UiColors.textDim,
-                letterSpacing: 0.7),
+          Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 4),
+            child: Text(
+              '«${_searchQuery.isEmpty ? '...' : _searchQuery}» — найдено',
+              style: const TextStyle(
+                  fontSize: 12,
+                  color: UiColors.textDim,
+                  letterSpacing: 0.7),
+            ),
           ),
-          const SizedBox(height: 10),
-          ..._results.map((r) => _resultRow(r)),
+          ..._results.map((r) => Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: _videoCard(r),
+              )),
         ],
       ),
     );
   }
 
-  Widget _resultRow(Map<String, String> r) {
-    final vid = r['id'] ?? '';
-    final title = (r['title'] ?? '').trim();
-    final thumb = r['thumb'] ?? '';
-    final durSec = int.tryParse(r['duration'] ?? '') ?? 0;
+  // ============ КАРТОЧКА ============
+
+  Widget _videoCard(VideoCard card) {
+    final String vkUrl = 'https://vk.com/video${card.id}';
     return InkWell(
-      borderRadius: BorderRadius.circular(14),
-      onTap: () {
-        _input.text = 'https://vk.com/video$vid';
-        _resolve(_input.text);
-      },
+      borderRadius: BorderRadius.circular(16),
+      onTap: () => _openVideo(card, vkUrl),
       child: Container(
-        margin: const EdgeInsets.only(bottom: 10),
-        padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(
           color: UiColors.surface,
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(16),
           border: Border.all(color: UiColors.border),
         ),
-        child: Row(
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: SizedBox(
-                width: 100,
-                height: 62,
-                child: thumb.isNotEmpty
-                    ? Image.network(
-                        thumb,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) =>
-                            _thumbPlaceholder(),
-                      )
-                    : _thumbPlaceholder(),
+            AspectRatio(
+              aspectRatio: 16 / 9,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (card.thumb.isNotEmpty)
+                    Image.network(
+                      card.thumb,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => _thumbPlaceholder(),
+                    )
+                  else
+                    _thumbPlaceholder(),
+                  // длительность
+                  if (card.durationSec > 0)
+                    Positioned(
+                      bottom: 8,
+                      left: 8,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 7, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: const Color(0xCC000000),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          card.durationLabel,
+                          style: const TextStyle(
+                              fontFamily: kMono,
+                              fontSize: 11,
+                              color: Colors.white),
+                        ),
+                      ),
+                    ),
+                  // иконка скачивания в углу
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: GestureDetector(
+                      onTap: () => _openVideo(card, vkUrl),
+                      child: Container(
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          color: const Color(0xCC12161F),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: UiColors.border),
+                        ),
+                        child: const Icon(Icons.download_outlined,
+                            color: UiColors.amber, size: 19),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
-            const SizedBox(width: 12),
-            Expanded(
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    title.isEmpty ? 'Видео $vid' : title,
+                    card.title.isEmpty ? 'Видео ${card.id}' : card.title,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
@@ -471,155 +516,17 @@ class _HomeScreenState extends State<HomeScreen>
                         height: 1.3,
                         color: UiColors.text),
                   ),
-                  if (durSec > 0) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      VkApiService.fmtDuration(durSec),
-                      style: const TextStyle(
-                          fontFamily: kMono,
-                          fontSize: 11,
-                          color: UiColors.textDim),
-                    ),
-                  ],
+                  const SizedBox(height: 4),
+                  Text(
+                    card.viewsLabel,
+                    style: const TextStyle(
+                        fontSize: 12, color: UiColors.textDim),
+                  ),
                 ],
               ),
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _previewSection() {
-    final v = _preview!;
-    final bool noLinks = _qualities.isEmpty;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Container(
-            decoration: BoxDecoration(
-              color: UiColors.surface,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: UiColors.border),
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                AspectRatio(
-                  aspectRatio: 16 / 9,
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      if (v.thumbnailUrl.isNotEmpty)
-                        Image.network(
-                          v.thumbnailUrl,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) =>
-                              _thumbPlaceholder(),
-                        )
-                      else
-                        _thumbPlaceholder(),
-                      Center(
-                        child: Container(
-                          width: 52,
-                          height: 52,
-                          decoration: const BoxDecoration(
-                            color: UiColors.playCircle,
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(Icons.play_arrow,
-                              color: Colors.white),
-                        ),
-                      ),
-                      Positioned(
-                        bottom: 10,
-                        right: 10,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 7, vertical: 3),
-                          decoration: BoxDecoration(
-                            color: const Color(0x99000000),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            v.duration,
-                            style: const TextStyle(
-                                fontFamily: kMono,
-                                fontSize: 11,
-                                color: Colors.white),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        v.title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                            height: 1.35,
-                            color: UiColors.text),
-                      ),
-                      const SizedBox(height: 4),
-                      const Text(
-                        'VK Видео',
-                        style: TextStyle(
-                            fontSize: 13, color: UiColors.textDim),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          if (noLinks)
-            Container(
-              margin: const EdgeInsets.only(top: 18),
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: UiColors.accentSoft,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: UiColors.accent),
-              ),
-              child: const Text(
-                'Это видео нашлось, но ссылки на файл для него '
-                'пока не выданы. Мы подключаем полный доступ — '
-                'попробуй позже или другое видео.',
-                style: TextStyle(
-                    fontSize: 13, height: 1.45, color: UiColors.text),
-              ),
-            )
-          else ...[
-            const SizedBox(height: 18),
-            const Text(
-              'Качество для скачивания',
-              style: TextStyle(
-                  fontSize: 12,
-                  color: UiColors.textDim,
-                  letterSpacing: 0.7),
-            ),
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children:
-                  _qualities.keys.map((q) => _chip(q)).toList(),
-            ),
-            const SizedBox(height: 20),
-            _downloadButton(),
-          ],
-        ],
       ),
     );
   }
@@ -633,75 +540,14 @@ class _HomeScreenState extends State<HomeScreen>
           colors: [UiColors.surface2, UiColors.border],
         ),
       ),
-    );
-  }
-
-  Widget _chip(String q) {
-    final bool sel = q == _selected;
-    final String size = _sizeFor(q);
-    return GestureDetector(
-      onTap: () => setState(() => _selected = q),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          color: sel ? UiColors.accentSoft : UiColors.surface,
-          borderRadius: BorderRadius.circular(10),
-          border:
-              Border.all(color: sel ? UiColors.accent : UiColors.border),
-        ),
-        child: Text.rich(
-          TextSpan(
-            style: TextStyle(
-              fontFamily: kMono,
-              fontSize: 13,
-              color: sel ? UiColors.text : UiColors.textDim,
-            ),
-            children: [
-              TextSpan(text: '${q}p'),
-              if (size.isNotEmpty)
-                TextSpan(
-                  text: '  · $size',
-                  style: TextStyle(
-                      fontSize: 11,
-                      color: (sel ? UiColors.text : UiColors.textDim)
-                          .withOpacity(.6)),
-                ),
-            ],
-          ),
-        ),
+      child: const Center(
+        child: Icon(Icons.play_circle_outline,
+            color: UiColors.textDim, size: 30),
       ),
     );
   }
 
-  Widget _downloadButton() {
-    return Material(
-      color: UiColors.accent,
-      borderRadius: BorderRadius.circular(14),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(14),
-        onTap: _startDownload,
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(vertical: 15),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.download_outlined,
-                  color: Colors.white, size: 17),
-              const SizedBox(width: 8),
-              Text(
-                'Скачать в $_selected p',
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+  // ============ ИСТОРИЯ ============
 
   Widget _historyTab() {
     return AnimatedBuilder(
@@ -720,7 +566,7 @@ class _HomeScreenState extends State<HomeScreen>
               borderRadius: BorderRadius.circular(14),
               onTap: () {
                 _input.text = h;
-                _tabs.animateTo(0);
+                _tabs.animateTo(1);
               },
               child: Container(
                 padding: const EdgeInsets.all(14),
@@ -750,6 +596,357 @@ class _HomeScreenState extends State<HomeScreen>
           },
         );
       },
+    );
+  }
+}
+
+/// Диалог-резолвер: крутится, пока сервер отдаёт качества, потом лист качества.
+class _ResolveDialog extends StatefulWidget {
+  const _ResolveDialog({required this.card, required this.rawId});
+
+  final VideoCard card;
+  final String rawId;
+
+  @override
+  State<_ResolveDialog> createState() => _ResolveDialogState();
+}
+
+class _ResolveDialogState extends State<_ResolveDialog> {
+  bool _loading = true;
+  String? _error;
+  Map<String, String> _qualities = {};
+  String _title = '';
+  String _thumb = '';
+  int _durationSec = 0;
+  final DownloadService _downloader = DownloadService();
+
+  @override
+  void initState() {
+    super.initState();
+    _resolve();
+  }
+
+  Future<void> _resolve() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final res = await VkApiService.resolve(widget.rawId);
+      if (!mounted) return;
+      if (res == null) {
+        setState(() {
+          _loading = false;
+          _error = VkApiService.lastError ?? 'Не удалось открыть видео';
+        });
+        return;
+      }
+      setState(() {
+        _loading = false;
+        _qualities = Map<String, String>.from(
+            (res['qualities'] as Map?) ?? const {});
+        _title = (res['title'] as String?) ?? widget.card.title;
+        _thumb = (res['thumb'] as String?) ?? widget.card.thumb;
+        _durationSec =
+            int.tryParse((res['duration'] ?? 0).toString()) ??
+                widget.card.durationSec;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = 'Нет связи с сервером';
+      });
+    }
+  }
+
+  String _sizeFor(String q) {
+    const rates = {
+      '240': 0.35,
+      '360': 0.6,
+      '480': 0.95,
+      '720': 1.6,
+      '1080': 2.6,
+      '1440': 4.5,
+      '2160': 8.0,
+    };
+    if (_durationSec <= 0) return '';
+    final mb = ((rates[q] ?? 1.0) * _durationSec).round();
+    return '~$mb МБ';
+  }
+
+  Future<void> _download(String q, String url) async {
+    final id = DateTime.now().millisecondsSinceEpoch.toString();
+    final item = DownloadItem(
+      id: id,
+      title: _title.isEmpty ? 'Видео' : _title,
+      quality: '${q}p',
+      sizeLabel: _sizeFor(q),
+      filePath: '',
+    );
+    appState.addDownload(item);
+    Navigator.of(context).pop(); // закрыть диалог
+
+    int lastPercent = -1;
+    try {
+      final v = VideoModel(
+        id: widget.card.id,
+        title: _title.isEmpty ? 'Видео' : _title,
+        thumbnailUrl: _thumb,
+        videoUrl: '',
+        channelName: 'VK Видео',
+        views: 0,
+        duration: VkApiService.fmtDuration(_durationSec),
+        qualities: [],
+      );
+      final path = await _downloader.downloadVideo(v, q, url, (rec, tot) {
+        if (tot <= 0) return;
+        final pct = (rec / tot * 100).floor();
+        if (pct != lastPercent) {
+          lastPercent = pct;
+          appState.updateProgress(id, rec / tot);
+        }
+      });
+      item.filePath = path ?? '';
+      appState.markDone(id);
+    } catch (_) {
+      appState.remove(id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: UiColors.surface2,
+            content:
+                Text('Ошибка скачивания', style: TextStyle(color: UiColors.text)),
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: UiColors.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Container(
+        width: double.maxFinite,
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
+        child: _loading
+            ? const Padding(
+                padding: EdgeInsets.all(40),
+                child: Center(
+                  child: CircularProgressIndicator(color: UiColors.accent),
+                ),
+              )
+            : _error != null
+                ? Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.error_outline,
+                          size: 32, color: UiColors.textDim),
+                      const SizedBox(height: 10),
+                      Text(
+                        _error!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            color: UiColors.textDim, fontSize: 13),
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Material(
+                            color: UiColors.surface2,
+                            borderRadius: BorderRadius.circular(10),
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(10),
+                              onTap: _resolve,
+                              child: const Padding(
+                                padding: EdgeInsets.symmetric(
+                                    horizontal: 18, vertical: 9),
+                                child: Text('Повторить',
+                                    style: TextStyle(
+                                        color: UiColors.text,
+                                        fontWeight: FontWeight.w600)),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Material(
+                            color: UiColors.surface2,
+                            borderRadius: BorderRadius.circular(10),
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(10),
+                              onTap: () => Navigator.of(context).pop(),
+                              child: const Padding(
+                                padding: EdgeInsets.symmetric(
+                                    horizontal: 18, vertical: 9),
+                                child: Text('Закрыть',
+                                    style: TextStyle(
+                                        color: UiColors.textDim,
+                                        fontWeight: FontWeight.w600)),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  )
+                : _qualitySheet(),
+      ),
+    );
+  }
+
+  Widget _qualitySheet() {
+    final bool noLinks = _qualities.isEmpty;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // превью
+        ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: AspectRatio(
+            aspectRatio: 16 / 9,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                if (_thumb.isNotEmpty)
+                  Image.network(
+                    _thumb,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => _thumbPh(),
+                  )
+                else
+                  _thumbPh(),
+                if (_durationSec > 0)
+                  Positioned(
+                    bottom: 8,
+                    left: 8,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 7, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: const Color(0xCC000000),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        VkApiService.fmtDuration(_durationSec),
+                        style: const TextStyle(
+                            fontFamily: kMono,
+                            fontSize: 11,
+                            color: Colors.white),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Text(
+          _title.isEmpty ? 'Видео VK' : _title,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+              height: 1.3,
+              color: UiColors.text),
+        ),
+        const SizedBox(height: 4),
+        const Text('VK Видео',
+            style: TextStyle(fontSize: 12, color: UiColors.textDim)),
+        const SizedBox(height: 14),
+        if (noLinks)
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: UiColors.accentSoft,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: UiColors.accent),
+            ),
+            child: const Text(
+              'Видео нашлось, но ссылки на файл ещё не выданы. '
+              'Мы подключаем полный доступ — попробуй позже '
+              'или другое видео.',
+              style: TextStyle(
+                  fontSize: 13, height: 1.45, color: UiColors.text),
+            ),
+          )
+        else ...[
+          const Text(
+            'Качество для скачивания',
+            style: TextStyle(
+                fontSize: 12, color: UiColors.textDim, letterSpacing: 0.7),
+          ),
+          const SizedBox(height: 10),
+          ..._qualities.keys.map((q) {
+            final size = _sizeFor(q);
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () => _download(q, _qualities[q]!),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: UiColors.surface2,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: UiColors.border),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.download_outlined,
+                          color: UiColors.amber, size: 17),
+                      const SizedBox(width: 10),
+                      Text(
+                        '${q}p',
+                        style: const TextStyle(
+                            fontFamily: kMono,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: UiColors.text),
+                      ),
+                      const Spacer(),
+                      if (size.isNotEmpty)
+                        Text(
+                          size,
+                          style: const TextStyle(
+                              fontSize: 12, color: UiColors.textDim),
+                        ),
+                      const Icon(Icons.chevron_right,
+                          color: UiColors.textDim, size: 18),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+        ],
+        const SizedBox(height: 6),
+        Center(
+          child: TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Закрыть',
+                style: TextStyle(color: UiColors.textDim)),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _thumbPh() {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [UiColors.surface2, UiColors.border],
+        ),
+      ),
     );
   }
 }
