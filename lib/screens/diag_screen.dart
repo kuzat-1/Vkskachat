@@ -63,39 +63,48 @@ class _DiagScreenState extends State<DiagScreen> {
       }
     }
 
-    // 3–5. Источники VK прямо с телефона
+    // Источники VK прямо с телефона
     final sources = <String, String>{
       '3. vk.com/al_video.php':
           'https://vk.com/al_video.php?act=show&al=1&video=$id',
       '4. m.vk.com': 'https://m.vk.com/video$id',
       '5. vkvideo.ru': 'https://vkvideo.ru/video$id',
     };
+    if (id.contains('_')) {
+      final pp = id.split('_');
+      sources['6. video_ext.php'] =
+          'https://vk.com/video_ext.php?oid=${pp[0]}&id=${pp[1]}';
+    }
+    var stepNo = 3;
     for (final e in sources.entries) {
+      final name = '$stepNo. ${e.key}';
+      stepNo++;
       final body = await VkApiService.fetchVk(e.value);
+      final preview = body
+          .replaceAll(RegExp(r'\s+'), ' ')
+          .substring(0, min(130, body.length));
       if (body.isEmpty) {
-        _add(e.key, 'ПУСТО', 'ответ пустой или сеть заблокировала');
+        _add(name, 'ПУСТО', 'ответ пустой или сеть заблокировала');
         continue;
       }
       final p = VkApiService.parsePage(body);
       if (p == null) {
-        _add(e.key, 'БЕЗ ССЫЛОК',
-            'ответ ${body.length} симв., качеств не найдено');
+        _add(name, 'БЕЗ ССЫЛОК', '${body.length} симв. | $preview');
       } else {
         final q = (p['qualities'] as Map<String, String>).keys.toList();
         q.sort();
-        _add(e.key, 'OK!',
-            '${body.length} симв.; качества: ${q.join(", ")}');
+        _add(name, 'OK!', 'качества: ${q.join(", ")}');
       }
     }
 
-    // 6. Полный resolve
+    // Финальный resolve
     final res = await VkApiService.resolve(_ctrl.text);
     if (res == null) {
-      _add('6. Итог', 'ПРОВАЛ', VkApiService.lastError ?? '');
+      _add('Итог', 'ПРОВАЛ', VkApiService.lastError ?? '');
     } else {
       final keys =
           ((res['qualities'] as Map?)?.keys.toList() ?? <String>[])..sort();
-      _add('6. Итог', keys.isEmpty ? 'ТОЛЬКО МЕТА' : 'ПОЛНЫЙ УСПЕХ',
+      _add('Итог', keys.isEmpty ? 'ТОЛЬКО МЕТА' : 'ПОЛНЫЙ УСПЕХ',
           'качества: ${keys.join(", ")}');
     }
 

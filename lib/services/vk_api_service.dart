@@ -88,14 +88,23 @@ class VkApiService {
     return null;
   }
 
-  /// Скрапинг с телефона: три источника по очереди
+  /// Скрапинг с телефона: источники по очереди
   static Future<Map<String, dynamic>?> resolveLocal(String id) async {
     final raw = id.startsWith('slug:') ? id.substring(5) : id;
+    final urls = <String>[
+      'https://vk.com/al_video.php?act=show&al=1&video=$raw',
+      'https://m.vk.com/video$raw',
+      'https://vkvideo.ru/video$raw',
+    ];
+    if (!raw.startsWith('-')) {
+      final p = raw.split('_');
+      if (p.length == 2) {
+        urls.add(
+            'https://vk.com/video_ext.php?oid=${p[0]}&id=${p[1]}');
+      }
+    }
     final bodies = <String>[
-      await fetchVk(
-          'https://vk.com/al_video.php?act=show&al=1&video=$raw'),
-      await fetchVk('https://m.vk.com/video$raw'),
-      await fetchVk('https://vkvideo.ru/video$raw'),
+      for (final u in urls) await fetchVk(u),
     ];
     for (final b in bodies) {
       if (b.isEmpty) continue;
@@ -152,6 +161,18 @@ class VkApiService {
     var canonId = '';
     final cm = RegExp(r'video(-?\d+)_(\d+)').firstMatch(body);
     if (cm != null) canonId = '${cm.group(1)}_${cm.group(2)}';
+
+    // --- расширенный скан: любые прямые .mp4 ---
+    final mp4re = RegExp(
+        r'https:(?:\\?/){1,2}[^"\\\s]{10,400}?\.mp4[^"\\\s]{0,80}');
+    for (final m in mp4re.allMatches(body)) {
+      final u = unesc(m.group(0)!);
+      if (!u.startsWith('http')) continue;
+      final qm =
+          RegExp(r'[_\.\-=/](\d{3,4})\.mp4').firstMatch(u.toLowerCase());
+      final key = qm != null ? qm.group(1)! : 'src${files.length}';
+      files.putIfAbsent(key, () => u);
+    }
 
     return {
       'id': canonId,
