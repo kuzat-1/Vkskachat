@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'diag_screen.dart';
 import '../models/video_model.dart';
 import '../services/download_service.dart';
 import '../services/vk_api_service.dart';
@@ -291,19 +292,23 @@ class _HomeScreenState extends State<HomeScreen>
   Widget _hero() {
     return Column(
       children: [
-        Container(
-          width: 56,
-          height: 56,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            gradient: const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [UiColors.accent, UiColors.blue],
+        GestureDetector(
+          onTap: () => Navigator.push(context,
+              MaterialPageRoute(builder: (_) => const DiagScreen())),
+          child: Container(
+            width: 56,
+            height: 56,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [UiColors.accent, UiColors.blue],
+              ),
             ),
+            child: const Icon(Icons.arrow_downward_rounded,
+                color: Colors.white, size: 28),
           ),
-          child: const Icon(Icons.arrow_downward_rounded,
-              color: Colors.white, size: 28),
         ),
         const SizedBox(height: 14),
         const Text(
@@ -322,7 +327,7 @@ class _HomeScreenState extends State<HomeScreen>
         ),
         const SizedBox(height: 4),
         const Text(
-          'сборка 12 · гибрид',
+          'сборка 13 · диагностика',
           style: TextStyle(
               fontFamily: kMono,
               fontSize: 10,

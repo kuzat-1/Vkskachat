@@ -88,10 +88,10 @@ class VkApiService {
   /// Скрапинг с телефона: три источника по очереди
   static Future<Map<String, dynamic>?> resolveLocal(String id) async {
     final bodies = <String>[
-      await _fetchVk(
+      await fetchVk(
           'https://vk.com/al_video.php?act=show&al=1&video=$id'),
-      await _fetchVk('https://m.vk.com/video$id'),
-      await _fetchVk('https://vkvideo.ru/video$id'),
+      await fetchVk('https://m.vk.com/video$id'),
+      await fetchVk('https://vkvideo.ru/video$id'),
     ];
     for (final b in bodies) {
       if (b.isEmpty) continue;
@@ -107,7 +107,7 @@ class VkApiService {
     return null;
   }
 
-  static Future<String> _fetchVk(String url) async {
+  static Future<String> fetchVk(String url) async {
     try {
       final r = await http
           .get(Uri.parse(url), headers: _vkHeaders)
