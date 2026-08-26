@@ -327,7 +327,7 @@ class _HomeScreenState extends State<HomeScreen>
         ),
         const SizedBox(height: 4),
         const Text(
-          'сборка 13 · диагностика',
+          'сборка 14 · интернет',
           style: TextStyle(
               fontFamily: kMono,
               fontSize: 10,

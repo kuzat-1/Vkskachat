@@ -32,6 +32,9 @@ class VkApiService {
     final s = input.trim();
     final m = RegExp(r'video(-?\d+)_(\d+)').firstMatch(s);
     if (m != null) return '${m.group(1)}_${m.group(2)}';
+    // Новый формат vkvideo: video230329053456240782 (без подчёркивания)
+    final slug = RegExp(r'video(\d{10,})').firstMatch(s);
+    if (slug != null) return 'slug:${slug.group(1)}';
     final m2 = RegExp(r'^(-?\d+)_(\d+)$').firstMatch(s);
     if (m2 != null) return s;
     return null;
@@ -87,18 +90,21 @@ class VkApiService {
 
   /// Скрапинг с телефона: три источника по очереди
   static Future<Map<String, dynamic>?> resolveLocal(String id) async {
+    final raw = id.startsWith('slug:') ? id.substring(5) : id;
     final bodies = <String>[
       await fetchVk(
-          'https://vk.com/al_video.php?act=show&al=1&video=$id'),
-      await fetchVk('https://m.vk.com/video$id'),
-      await fetchVk('https://vkvideo.ru/video$id'),
+          'https://vk.com/al_video.php?act=show&al=1&video=$raw'),
+      await fetchVk('https://m.vk.com/video$raw'),
+      await fetchVk('https://vkvideo.ru/video$raw'),
     ];
     for (final b in bodies) {
       if (b.isEmpty) continue;
       final parsed = parsePage(b);
       if (parsed != null &&
           (parsed['qualities'] as Map<String, String>).isNotEmpty) {
-        parsed['id'] = id;
+        final canon = (parsed['id'] as String?) ?? '';
+        parsed['id'] =
+            canon.isNotEmpty ? canon : (id.startsWith('slug:') ? id : id);
         parsed['can_download'] = true;
         parsed['source'] = 'local';
         return parsed;
@@ -142,7 +148,13 @@ class VkApiService {
         .firstMatch(body);
     if (hm != null) thumb = unesc(hm.group(1)!);
 
+    // канонический id вида -123_456 (для новых ссылок vkvideo)
+    var canonId = '';
+    final cm = RegExp(r'video(-?\d+)_(\d+)').firstMatch(body);
+    if (cm != null) canonId = '${cm.group(1)}_${cm.group(2)}';
+
     return {
+      'id': canonId,
       'title': title.trim().isEmpty ? 'Видео VK' : title.trim(),
       'duration': dur,
       'thumb': thumb,

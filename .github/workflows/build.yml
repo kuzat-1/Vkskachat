@@ -24,10 +24,20 @@ jobs:
       - name: Create Android scaffold
         run: flutter create . --platforms android --project-name vk_video_downloader --org com.kuzat
 
-      - name: Allow cleartext HTTP (server API)
+      - name: Patch AndroidManifest (INTERNET + cleartext)
         run: |
-          sed -i 's|<application|<application android:usesCleartextTraffic="true"|' android/app/src/main/AndroidManifest.xml
-          grep -q usesCleartextTraffic android/app/src/main/AndroidManifest.xml
+          python3 << 'PY'
+          p = 'android/app/src/main/AndroidManifest.xml'
+          s = open(p).read()
+          if 'android.permission.INTERNET' not in s:
+              s = s.replace('<application',
+                            '<uses-permission android:name="android.permission.INTERNET"/><application', 1)
+          if 'usesCleartextTraffic' not in s:
+              s = s.replace('<application',
+                            '<application android:usesCleartextTraffic="true"', 1)
+          open(p, 'w').write(s)
+          print(s[:500])
+          assert 'android.permission.INTERNET' in s
 
       - name: Install dependencies
         run: flutter pub get
