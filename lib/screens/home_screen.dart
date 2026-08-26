@@ -42,6 +42,8 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void initState() {
     super.initState();
+    // заранее берём ключ VK с сервера — он нужен для прямого video.get
+    VkApiService.fetchUserToken();
     _loadFeed();
   }
 

@@ -17,6 +17,19 @@ class VkApiService {
 
   static String? lastError;
 
+  /// Юзер-токен VK для прямых запросов video.get с телефона.
+  /// VK отдаёт файлы только с IP, с которого токен был выдан,
+  /// поэтому токен живёт на сервере, а использует его приложение (с IP телефона).
+  static String? userToken;
+
+  static Future<String?> fetchUserToken() async {
+    if (userToken != null && userToken!.isNotEmpty) return userToken;
+    final j = await _getJson('/api/get_token');
+    final t = (j?['token'] as String?) ?? '';
+    userToken = t.isEmpty ? null : t;
+    return userToken;
+  }
+
   static const Map<String, String> _vkHeaders = {
     'User-Agent':
         'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 '
@@ -69,7 +82,13 @@ class VkApiService {
       }
     }
 
-    // 2) Прямой скрапинг с устройства
+    // 2) Прямой video.get с телефона через юзер-токен с сервера.
+    //    Сервер в США не получает files (VK привязывает файлы к IP выдачи
+    //    токена), а телефон юзера — тот самый IP → файлы приходят.
+    final direct = await resolveDirect(id, serverData);
+    if (direct != null) return direct;
+
+    // 3) Прямой скрапинг с устройства
     final local = await resolveLocal(id);
     if (local != null) {
       if (serverData != null) {
@@ -86,6 +105,69 @@ class VkApiService {
 
     lastError = lastError ?? 'Не удалось получить видео';
     return null;
+  }
+
+  /// video.get напрямую с телефона (токен с сервера).
+  static Future<Map<String, dynamic>?> resolveDirect(
+      String id, Map<String, dynamic>? meta) async {
+    final tok = await fetchUserToken();
+    if (tok == null || tok.isEmpty) return null;
+    final raw = id.startsWith('slug:') ? id.substring(5) : id;
+    final url = Uri.parse('https://api.vk.com/method/video.get').replace(
+      queryParameters: {
+        'videos': raw,
+        'access_token': tok,
+        'v': '5.199',
+      },
+    );
+    try {
+      final r = await http
+          .get(url, headers: {'User-Agent': 'VKAndroidApp/8.42'})
+          .timeout(const Duration(seconds: 20));
+      final Map<String, dynamic> j = jsonDecode(r.body);
+      if (j['error'] != null) return null;
+      final items = (j['response']?['items'] as List?) ?? const [];
+      if (items.isEmpty) return null;
+      final it = items.first as Map<String, dynamic>;
+      final files = <String, String>{};
+      final src = (it['files'] as Map?) ?? const {};
+      for (final e in src.entries) {
+        final m = RegExp(r'mp4_(\d+)').firstMatch(e.key.toString());
+        if (m != null && e.value != null && e.value.toString().isNotEmpty) {
+          files[m.group(1)!] = e.value.toString();
+        }
+      }
+      if (files.isEmpty) return null;
+
+      String thumb = '';
+      String? bestPhoto;
+      for (final e in it.entries) {
+        if (e.key.startsWith('photo_') && e.value is String) {
+          final n = int.tryParse(e.key.split('_').last) ?? 0;
+          if (n > (int.tryParse(bestPhoto ?? '0') ?? 0)) bestPhoto = e.value as String;
+        }
+      }
+      if (bestPhoto != null) thumb = bestPhoto;
+      if (thumb.isEmpty) {
+        final ff = it['first_frame'];
+        if (ff is List && ff.isNotEmpty && ff.first is Map) {
+          final u = (ff.first as Map)['url'];
+          if (u is String && u.startsWith('http')) thumb = u;
+        }
+      }
+
+      return {
+        'id': id,
+        'title': (it['title'] as String?) ?? (meta?['title'] ?? 'Видео VK'),
+        'duration': int.tryParse((it['duration'] ?? 0).toString()) ?? 0,
+        'thumb': thumb.isNotEmpty ? thumb : (meta?['thumb'] ?? ''),
+        'qualities': files,
+        'can_download': true,
+        'source': 'direct',
+      };
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Скрапинг с телефона: источники по очереди
