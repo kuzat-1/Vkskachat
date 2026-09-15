@@ -1,16 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:video_player/video_player.dart';
+
 import '../models/video_card.dart';
-import '../models/video_model.dart';
-import '../services/download_service.dart';
 import '../services/vk_api_service.dart';
-import '../state/app_state.dart';
 import '../ui_theme.dart';
 
-/// Экран просмотра видео.
-/// Если сервер отдал файлы (есть юзер-токен) — стримим mp4 через video_player.
-/// Иначе — embed-плеер VK (video_ext.php) в WebView: видео играет в приложении.
+/// Экран просмотра VK Видео без скачивания.
+/// При наличии прямых mp4-потоков используется собственный плеер
+/// с управлением воспроизведением и качеством. Иначе — VK WebView.
 class VideoViewScreen extends StatefulWidget {
   const VideoViewScreen({super.key, required this.card, required this.rawId});
 
@@ -25,14 +25,13 @@ class _VideoViewScreenState extends State<VideoViewScreen> {
   bool _loading = true;
   String? _error;
   String _title = '';
-  String _thumb = '';
   int _durationSec = 0;
-  int _views = 0;
   Map<String, String> _qualities = {};
   String _playerUrl = '';
-
+  String _selectedQuality = 'Авто';
+  bool _showControls = true;
+  Timer? _hideTimer;
   VideoPlayerController? _vc;
-  final DownloadService _downloader = DownloadService();
 
   @override
   void initState() {
@@ -42,6 +41,7 @@ class _VideoViewScreenState extends State<VideoViewScreen> {
 
   @override
   void dispose() {
+    _hideTimer?.cancel();
     _vc?.dispose();
     super.dispose();
   }
@@ -61,79 +61,103 @@ class _VideoViewScreenState extends State<VideoViewScreen> {
         });
         return;
       }
-      setState(() {
-        _qualities = Map<String, String>.from(
-            (res['qualities'] as Map?) ?? const {});
-        _playerUrl = (res['player'] as String?) ?? '';
-        _title = (res['title'] as String?) ?? widget.card.title;
-        _thumb = (res['thumb'] as String?) ?? widget.card.thumb;
-        _durationSec =
-            int.tryParse((res['duration'] ?? 0).toString()) ??
-                widget.card.durationSec;
-        _views = widget.card.views;
-      });
 
-      if (_qualities.isNotEmpty) {
-        // стримим mp4
-        const order = ['2160', '1440', '1080', '720', '480', '360', '240'];
-        String? best;
-        for (final q in order) {
-          if (_qualities.containsKey(q)) {
-            best = _qualities[q];
-            break;
-          }
-        }
-        if (best != null) {
-          _vc = VideoPlayerController.networkUrl(Uri.parse(best));
-          try {
-            await _vc!.initialize();
-            await _vc!.setLooping(false);
-            await _vc!.play();
-          } catch (_) {
-            _vc?.dispose();
-            _vc = null;
-          }
-        }
-      }
+      _qualities = Map<String, String>.from((res['qualities'] as Map?) ?? const {});
+      _playerUrl = (res['player'] as String?) ?? '';
+      _title = (res['title'] as String?) ?? widget.card.title;
+      _durationSec = int.tryParse((res['duration'] ?? 0).toString()) ?? widget.card.durationSec;
+
+      await _openStream(_bestQuality());
       if (!mounted) return;
       setState(() => _loading = false);
+      _startHideTimer();
     } catch (_) {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = 'Нет связи с сервером';
+        _error = 'Не удалось загрузить видео. Проверьте интернет.';
       });
     }
   }
 
-  // ---------- СКАЧИВАНИЕ ----------
+  String? _bestQuality() {
+    const order = ['2160', '1440', '1080', '720', '480', '360', '240'];
+    for (final q in order) {
+      if (_qualities.containsKey(q)) return q;
+    }
+    return null;
+  }
 
-  String _sizeFor(String q) {
-    const rates = {
-      '240': 0.35,
-      '360': 0.6,
-      '480': 0.95,
-      '720': 1.6,
-      '1080': 2.6,
-      '1440': 4.5,
-      '2160': 8.0,
-    };
-    if (_durationSec <= 0) return '';
-    return '~${((rates[q] ?? 1.0) * _durationSec).round()} МБ';
+  Future<void> _openStream(String? quality) async {
+    if (quality == null || !_qualities.containsKey(quality)) return;
+    final url = _qualities[quality]!;
+    await _vc?.dispose();
+    final controller = VideoPlayerController.networkUrl(Uri.parse(url));
+    _vc = controller;
+    try {
+      await controller.initialize();
+      await controller.setLooping(false);
+      await controller.play();
+    } catch (_) {
+      await controller.dispose();
+      if (identical(_vc, controller)) _vc = null;
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _selectQuality(String value) async {
+    Navigator.of(context).pop();
+    if (value == 'Авто') {
+      _selectedQuality = 'Авто';
+      await _openStream(_bestQuality());
+    } else {
+      _selectedQuality = value;
+      await _openStream(value.replaceAll('p', ''));
+    }
+    if (mounted) {
+      setState(() {});
+      _startHideTimer();
+    }
+  }
+
+  List<String> _sortedQualities() {
+    final list = _qualities.keys.toList();
+    list.sort((a, b) => (int.tryParse(b) ?? 0).compareTo(int.tryParse(a) ?? 0));
+    return list;
+  }
+
+  void _startHideTimer() {
+    _hideTimer?.cancel();
+    _hideTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted && (_vc?.value.isPlaying ?? false)) {
+        setState(() => _showControls = false);
+      }
+    });
+  }
+
+  void _toggleControls() {
+    setState(() => _showControls = !_showControls);
+    if (_showControls) _startHideTimer();
+  }
+
+  void _togglePlay() {
+    final c = _vc;
+    if (c == null || !c.value.isInitialized) return;
+    if (c.value.isPlaying) {
+      c.pause();
+      _hideTimer?.cancel();
+      setState(() => _showControls = true);
+    } else {
+      c.play();
+      setState(() => _showControls = true);
+      _startHideTimer();
+    }
   }
 
   void _showQualityDialog() {
     if (_qualities.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          behavior: SnackBarBehavior.floating,
-          backgroundColor: UiColors.surface2,
-          content: Text(
-            'Ссылки на файл пока не выданы. Нужен ключ VK — '
-            'см. token.html на сервере.',
-            style: TextStyle(color: UiColors.text),
-          ),
-        ),
+        const SnackBar(content: Text('Для этого видео доступен встроенный VK-плеер.')),
       );
       return;
     }
@@ -141,67 +165,21 @@ class _VideoViewScreenState extends State<VideoViewScreen> {
       context: context,
       backgroundColor: UiColors.surface,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
       ),
       builder: (ctx) => SafeArea(
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+          padding: const EdgeInsets.fromLTRB(18, 18, 18, 12),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'Качество для скачивания',
-                style: TextStyle(
-                    fontSize: 13,
-                    color: UiColors.textDim,
-                    letterSpacing: 0.7),
-              ),
-              const SizedBox(height: 10),
-              ..._qualities.keys.map((q) {
-                final size = _sizeFor(q);
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: () {
-                      Navigator.of(ctx).pop();
-                      _download(q, _qualities[q]!);
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 13),
-                      decoration: BoxDecoration(
-                        color: UiColors.surface2,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: UiColors.border),
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.download_outlined,
-                              color: UiColors.amber, size: 17),
-                          const SizedBox(width: 10),
-                          Text(
-                            '${q}p',
-                            style: const TextStyle(
-                                fontFamily: kMono,
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
-                                color: UiColors.text),
-                          ),
-                          const Spacer(),
-                          if (size.isNotEmpty)
-                            Text(size,
-                                style: const TextStyle(
-                                    fontSize: 12, color: UiColors.textDim)),
-                          const Icon(Icons.chevron_right,
-                              color: UiColors.textDim, size: 18),
-                        ],
-                      ),
-                    ),
-                  ),
-                );
-              }).toList(),
+              const Text('Качество видео', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 5),
+              const Text('Авто выбирает самое доступное качество.', style: TextStyle(color: UiColors.textDim, fontSize: 12)),
+              const SizedBox(height: 12),
+              _qualityTile(ctx, 'Авто', _selectedQuality == 'Авто'),
+              ..._sortedQualities().map((q) => _qualityTile(ctx, '${q}p', _selectedQuality == '${q}p')),
             ],
           ),
         ),
@@ -209,66 +187,14 @@ class _VideoViewScreenState extends State<VideoViewScreen> {
     );
   }
 
-  Future<void> _download(String q, String url) async {
-    final id = DateTime.now().millisecondsSinceEpoch.toString();
-    final item = DownloadItem(
-      id: id,
-      title: _title.isEmpty ? 'Видео' : _title,
-      quality: '${q}p',
-      sizeLabel: _sizeFor(q),
-      filePath: '',
+  Widget _qualityTile(BuildContext ctx, String label, bool selected) {
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(selected ? Icons.radio_button_checked : Icons.radio_button_off, color: selected ? UiColors.accent : UiColors.textDim),
+      title: Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
+      onTap: () => _selectQuality(label),
     );
-    appState.addDownload(item);
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        behavior: SnackBarBehavior.floating,
-        backgroundColor: UiColors.surface2,
-        content: Text(
-          'Скачивание ${q}p запущено — смотри вкладку «Загрузки»',
-          style: const TextStyle(color: UiColors.text),
-        ),
-      ),
-    );
-
-    int lastPercent = -1;
-    try {
-      final v = VideoModel(
-        id: widget.card.id,
-        title: _title.isEmpty ? 'Видео' : _title,
-        thumbnailUrl: _thumb,
-        videoUrl: '',
-        channelName: 'VK Видео',
-        views: _views,
-        duration: VkApiService.fmtDuration(_durationSec),
-        qualities: [],
-      );
-      final path = await _downloader.downloadVideo(v, q, url, (rec, tot) {
-        if (tot <= 0) return;
-        final pct = (rec / tot * 100).floor();
-        if (pct != lastPercent) {
-          lastPercent = pct;
-          appState.updateProgress(id, rec / tot);
-        }
-      });
-      item.filePath = path ?? '';
-      appState.markDone(id);
-    } catch (_) {
-      appState.remove(id);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            behavior: SnackBarBehavior.floating,
-            backgroundColor: UiColors.surface2,
-            content:
-                Text('Ошибка скачивания', style: TextStyle(color: UiColors.text)),
-          ),
-        );
-      }
-    }
   }
-
-  // ---------- UI ----------
 
   @override
   Widget build(BuildContext context) {
@@ -277,20 +203,12 @@ class _VideoViewScreenState extends State<VideoViewScreen> {
       appBar: AppBar(
         backgroundColor: UiColors.bg,
         elevation: 0,
-        centerTitle: false,
-        title: Text(
-          _title.isEmpty ? 'Видео' : _title,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-              fontSize: 15, fontWeight: FontWeight.w600, color: UiColors.text),
-        ),
+        title: Text(_title.isEmpty ? 'Видео' : _title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
       ),
       body: SafeArea(
         top: false,
         child: _loading
-            ? const Center(
-                child: CircularProgressIndicator(color: UiColors.accent))
+            ? const Center(child: CircularProgressIndicator(color: UiColors.accent))
             : _error != null
                 ? _errorView()
                 : _content(),
@@ -305,31 +223,11 @@ class _VideoViewScreenState extends State<VideoViewScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.error_outline,
-                size: 34, color: UiColors.textDim),
+            const Icon(Icons.error_outline, size: 40, color: UiColors.textDim),
             const SizedBox(height: 12),
-            Text(
-              _error!,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                  color: UiColors.textDim, fontSize: 13, height: 1.5),
-            ),
-            const SizedBox(height: 16),
-            Material(
-              color: UiColors.accent,
-              borderRadius: BorderRadius.circular(12),
-              child: InkWell(
-                borderRadius: BorderRadius.circular(12),
-                onTap: _resolve,
-                child: const Padding(
-                  padding:
-                      EdgeInsets.symmetric(horizontal: 22, vertical: 10),
-                  child: Text('Повторить',
-                      style: TextStyle(
-                          color: Colors.white, fontWeight: FontWeight.w600)),
-                ),
-              ),
-            ),
+            Text(_error!, textAlign: TextAlign.center, style: const TextStyle(color: UiColors.textDim, height: 1.5)),
+            const SizedBox(height: 18),
+            FilledButton(onPressed: _resolve, child: const Text('Повторить')),
           ],
         ),
       ),
@@ -339,81 +237,25 @@ class _VideoViewScreenState extends State<VideoViewScreen> {
   Widget _content() {
     return Column(
       children: [
-        // ПЛЕЕР
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 0),
-          child: _player(),
-        ),
+        _player(),
         Expanded(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 30),
+            padding: const EdgeInsets.fromLTRB(18, 16, 18, 30),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  _title.isEmpty ? 'Видео VK' : _title,
-                  style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
-                      height: 1.35,
-                      color: UiColors.text),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  'VK Видео${_durationSec > 0 ? ' · ${VkApiService.fmtDuration(_durationSec)}' : ''}',
-                  style: const TextStyle(
-                      fontSize: 13, color: UiColors.textDim),
-                ),
-                const SizedBox(height: 20),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Material(
-                        color: UiColors.accent,
-                        borderRadius: BorderRadius.circular(14),
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(14),
-                          onTap: _showQualityDialog,
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                const Icon(Icons.download_outlined,
-                                    color: Colors.white, size: 20),
-                                const SizedBox(width: 8),
-                                const Text('Скачать',
-                                    style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 15,
-                                        fontWeight: FontWeight.w700)),
-                                if (_qualities.isNotEmpty) ...[
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    '· ${_qualities.length} качества',
-                                    style: const TextStyle(
-                                        color: Colors.white70,
-                                        fontSize: 12),
-                                  ),
-                                ],
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                if (_qualities.isEmpty)
-                  const Text(
-                    'Ссылки на файл появятся после подключения ключа VK. '
-                    'Видео уже доступно для просмотра — можно смотреть прямо здесь.',
-                    style: TextStyle(
-                        fontSize: 12.5,
-                        color: UiColors.textDim,
-                        height: 1.5),
-                  ),
+                Text(_title.isEmpty ? 'Видео VK' : _title, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700, height: 1.35)),
+                const SizedBox(height: 7),
+                Text('VK Видео${_durationSec > 0 ? ' · ${VkApiService.fmtDuration(_durationSec)}' : ''}', style: const TextStyle(fontSize: 13, color: UiColors.textDim)),
+                const SizedBox(height: 16),
+                if (_qualities.isNotEmpty)
+                  OutlinedButton.icon(
+                    onPressed: _showQualityDialog,
+                    icon: const Icon(Icons.high_quality_outlined, size: 19),
+                    label: Text('Качество: $_selectedQuality'),
+                  )
+                else
+                  const Text('Видео воспроизводится через встроенный VK-плеер.', style: TextStyle(color: UiColors.textDim, fontSize: 12.5)),
               ],
             ),
           ),
@@ -423,32 +265,69 @@ class _VideoViewScreenState extends State<VideoViewScreen> {
   }
 
   Widget _player() {
-    if (_vc != null) {
-      return AspectRatio(
-        aspectRatio: _vc!.value.aspectRatio == 0
-            ? 16 / 9
-            : _vc!.value.aspectRatio,
-        child: Container(
-          color: Colors.black,
-          child: VideoPlayer(_vc!),
+    if (_vc != null && _vc!.value.isInitialized) {
+      final c = _vc!;
+      return GestureDetector(
+        onTap: _toggleControls,
+        child: AspectRatio(
+          aspectRatio: c.value.aspectRatio == 0 ? 16 / 9 : c.value.aspectRatio,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Container(color: Colors.black, child: VideoPlayer(c)),
+              if (_showControls)
+                Container(
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Color(0xB8000000)]),
+                  ),
+                ),
+              if (_showControls)
+                Center(
+                  child: IconButton(
+                    onPressed: _togglePlay,
+                    iconSize: 58,
+                    color: Colors.white,
+                    icon: Icon(c.value.isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill),
+                  ),
+                ),
+              if (_showControls)
+                Positioned(
+                  left: 10,
+                  right: 10,
+                  bottom: 4,
+                  child: VideoProgressIndicator(c, allowScrubbing: true, padding: const EdgeInsets.symmetric(vertical: 8), colors: const VideoProgressColors(playedColor: UiColors.accent, bufferedColor: Colors.white54, backgroundColor: Colors.white24)),
+                ),
+              if (_showControls && _qualities.length > 1)
+                Positioned(
+                  right: 10,
+                  top: 10,
+                  child: Material(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(10),
+                    child: InkWell(
+                      onTap: _showQualityDialog,
+                      borderRadius: BorderRadius.circular(10),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                        child: Text(_selectedQuality, style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w700)),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ),
       );
     }
-    // WebView embed-плеер VK
-    final url = _playerUrl.isNotEmpty
-        ? _playerUrl
-        : 'https://m.vk.com/video${widget.card.id}';
+
+    final url = _playerUrl.isNotEmpty ? _playerUrl : 'https://m.vk.com/video${widget.card.id}';
     return AspectRatio(
       aspectRatio: 16 / 9,
       child: Container(
         color: Colors.black,
         child: InAppWebView(
           initialUrlRequest: URLRequest(url: WebUri(url)),
-          initialSettings: InAppWebViewSettings(
-            javaScriptEnabled: true,
-            mediaPlaybackRequiresUserGesture: false,
-            allowsInlineMediaPlayback: true,
-          ),
+          initialSettings: InAppWebViewSettings(javaScriptEnabled: true, mediaPlaybackRequiresUserGesture: false, allowsInlineMediaPlayback: true),
         ),
       ),
     );
