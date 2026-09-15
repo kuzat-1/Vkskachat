@@ -1,5 +1,5 @@
-name: vk_video_downloader
-description: Приложение для скачивания видео с VK
+name: vk_video_viewer
+description: Приложение для просмотра видео с VK
 publish_to: 'none'
 
 environment:
@@ -9,10 +9,7 @@ dependencies:
   flutter:
     sdk: flutter
   http: ^1.1.0
-  path_provider: ^2.1.1
   video_player: ^2.8.0
-  dio: ^5.3.0
-  shared_preferences: ^2.2.0
   flutter_inappwebview: ^6.1.5
 
 dev_dependencies:
