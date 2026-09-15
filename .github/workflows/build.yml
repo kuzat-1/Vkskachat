@@ -9,46 +9,39 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: subosito/flutter-action@v2
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
-      - name: Create Android scaffold
-        run: flutter create . --platforms android --project-name vk_video_downloader --org com.kuzat
-
-      - name: Patch AndroidManifest (INTERNET + cleartext)
-        run: |
-          python3 << 'PY'
-          p = 'android/app/src/main/AndroidManifest.xml'
-          s = open(p).read()
-          if 'android.permission.INTERNET' not in s:
-              s = s.replace('<application',
-                            '<uses-permission android:name="android.permission.INTERNET"/><application', 1)
-          if 'usesCleartextTraffic' not in s:
-              s = s.replace('<application',
-                            '<application android:usesCleartextTraffic="true"', 1)
-          open(p, 'w').write(s)
-          print(s[:500])
-          assert 'android.permission.INTERNET' in s
+      - name: Verify Flutter project
+        run: flutter doctor -v
 
       - name: Install dependencies
         run: flutter pub get
+
+      - name: Analyze Dart code
+        run: flutter analyze
 
       - name: Build release APK
         run: flutter build apk --release
 
       - name: Collect APK
-        run: cp build/app/outputs/flutter-apk/app-release.apk vk-video-downloader.apk
+        run: cp build/app/outputs/flutter-apk/app-release.apk vk-video-viewer.apk
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: vk-video-downloader-apk
-          path: vk-video-downloader.apk
+          name: vk-video-viewer-apk
+          path: vk-video-viewer.apk
+          if-no-files-found: error
